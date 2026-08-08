@@ -30,13 +30,13 @@ If the install output says to run `/reload-plugins`, do that afterward to activa
 
 ### Installing a single skill
 
-Each skill also has its own marketplace entry (all prefixed `php-` to avoid colliding with other marketplaces' plugins of the same generic tool name), so you don't have to pull in all four if you only want one. After the `marketplace add` step above, install just the skill you need instead of `seyon-php-tools@seyon-php-tools`:
+Each skill also has its own marketplace entry, so you don't have to pull in all four if you only want one. Their tool names are distinctive enough on their own — no extra prefix needed. After the `marketplace add` step above, install just the skill you need instead of `seyon-php-tools@seyon-php-tools`:
 
 ```
-/plugin install php-phpstan@seyon-php-tools
+/plugin install phpstan@seyon-php-tools
 ```
 
-Swap `php-phpstan` for `php-phpinsights`, `php-deptrac`, or `php-symfony-log` to install just that one skill.
+Swap `phpstan` for `phpinsights`, `deptrac`, or `symfony-log` to install just that one skill.
 
 ### Keeping it updated
 

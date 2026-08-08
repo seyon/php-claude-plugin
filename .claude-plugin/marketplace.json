@@ -10,25 +10,25 @@
       "description": "All php-tools skills: PHPStan, PHPInsights, Deptrac, and Symfony log investigation"
     },
     {
-      "name": "php-phpstan",
+      "name": "phpstan",
       "source": "./",
       "skills": ["./skills/phpstan"],
       "description": "PHPStan advisor: run PHPStan in an isolated Docker container and auto-fix findings"
     },
     {
-      "name": "php-phpinsights",
+      "name": "phpinsights",
       "source": "./",
       "skills": ["./skills/phpinsights"],
       "description": "PHPInsights advisor: run PHPInsights in an isolated Docker container and auto-fix findings"
     },
     {
-      "name": "php-deptrac",
+      "name": "deptrac",
       "source": "./",
       "skills": ["./skills/deptrac"],
       "description": "Deptrac advisor: run Deptrac in an isolated Docker container and auto-fix layer violations"
     },
     {
-      "name": "php-symfony-log",
+      "name": "symfony-log",
       "source": "./",
       "skills": ["./skills/symfony-log"],
       "description": "Investigate a Symfony project's application logs for a given problem/question"
