@@ -1,10 +1,10 @@
 # php-tools
 
-A [Claude Code plugin](https://docs.claude.com/en/docs/claude-code) that provides PHP quality-tooling skills — currently [PHPStan](https://phpstan.org), [PHPInsights](https://github.com/nunomaduro/phpinsights), and [Deptrac](https://github.com/qossmic/deptrac).
+A [Claude Code plugin](https://docs.claude.com/en/docs/claude-code) that provides PHP quality-tooling skills — currently [PHPStan](https://phpstan.org), [PHPInsights](https://github.com/nunomaduro/phpinsights), [Deptrac](https://github.com/qossmic/deptrac), and a Symfony log investigator.
 
 ## What it does
 
-Each skill is more than a wrapper around a CLI tool — it's an **advisor loop**:
+The three static-analysis skills (`phpstan`, `phpinsights`, `deptrac`) are more than a wrapper around a CLI tool each — they're an **advisor loop**:
 
 1. Run the tool in an isolated Docker container with fixed, reproducible parameters (JSON output, result caching where applicable).
 2. Group the findings by their underlying cause — PHPStan's error identifier, PHPInsights' insight class, or Deptrac's violated layer pair.
@@ -13,13 +13,26 @@ Each skill is more than a wrapper around a CLI tool — it's an **advisor loop**
 
 The result: static analysis output that used to be dumped raw into an expensive model's context instead gets turned into targeted, model-tier-appropriate fix instructions, with the recipe-writing cost paid once per kind of issue rather than once per occurrence.
 
-Skills: `phpstan`, `phpinsights`, `deptrac`. See each skill's `SKILL.md` for its exact workflow.
+The fourth skill, `symfony-log`, applies the same cheap-model-first idea to a different problem: investigating a Symfony project's own application logs. Given a problem/question, it has Haiku bulk-cluster and summarize the relevant `var/log/*.log` entries into a compact findings list, then answers the question directly from that summary instead of reading raw log noise. It's a local-development aid — it defaults to the `dev` log, not `prod`.
+
+See each skill's `SKILL.md` for its exact workflow.
+
+## Installation
+
+This repo is its own [plugin marketplace](https://code.claude.com/docs/en/plugin-marketplaces), so installing it is two commands inside Claude Code:
+
+```
+/plugin marketplace add seyon/php-claude-plugin
+/plugin install php-tools@php-tools
+```
+
+If the install output says to run `/reload-plugins`, do that afterward to activate it. No other setup is required beyond having [Docker](#docker-not-a-generic-tool-runner) available locally — the skills themselves detect everything else about the target project on first use.
 
 ## Docker, not a generic tool runner
 
-Every skill runs its tool inside a Docker container built specifically for the target project — the container gets exactly the PHP version and extensions that project's own `composer.json`/`composer.lock` declare (auto-detected, see `lib/docker/`), so the analysis never depends on whatever happens to be installed on the host, and never fails on a missing extension the host happens to have. The (expensive) image build only happens once per project per unique requirement set; later runs reuse it.
+Every skill *except* `symfony-log` (which only reads log files off disk, nothing to isolate) runs its tool inside a Docker container built specifically for the target project — the container gets exactly the PHP version and extensions that project's own `composer.json`/`composer.lock` declare (auto-detected, see `lib/docker/`), so the analysis never depends on whatever happens to be installed on the host, and never fails on a missing extension the host happens to have. The (expensive) image build only happens once per project per unique requirement set; later runs reuse it.
 
-This means **Docker is a hard requirement** for every skill in this plugin — there is deliberately no fallback to running tools directly on the host. The plugin has not been built or tested against any other execution environment (podman, rootless containers, remote Docker daemons, CI runners without Docker-in-Docker, Windows without WSL2, etc.). If you need one of those, expect to adapt `lib/docker/` and each skill's `docker/run.sh` yourself.
+This means **Docker is a hard requirement** for the `phpstan`/`phpinsights`/`deptrac` skills — there is deliberately no fallback to running tools directly on the host. The plugin has not been built or tested against any other execution environment (podman, rootless containers, remote Docker daemons, CI runners without Docker-in-Docker, Windows without WSL2, etc.). If you need one of those, expect to adapt `lib/docker/` and each skill's `docker/run.sh` yourself.
 
 ## Monorepo support
 
