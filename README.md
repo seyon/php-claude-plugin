@@ -23,27 +23,27 @@ This repo is its own [plugin marketplace](https://code.claude.com/docs/en/plugin
 
 ```
 /plugin marketplace add seyon/php-claude-plugin
-/plugin install php-tools@php-tools
+/plugin install seyon-php-tools@seyon-php-tools
 ```
 
 If the install output says to run `/reload-plugins`, do that afterward to activate it. No other setup is required beyond having [Docker](#docker-not-a-generic-tool-runner) available locally — the skills themselves detect everything else about the target project on first use.
 
 ### Installing a single skill
 
-Each skill also has its own marketplace entry, so you don't have to pull in all four if you only want one. After the `marketplace add` step above, install just the skill you need instead of `php-tools@php-tools`:
+Each skill also has its own marketplace entry (all prefixed `seyon-` to avoid colliding with other marketplaces' plugins of the same generic name), so you don't have to pull in all four if you only want one. After the `marketplace add` step above, install just the skill you need instead of `seyon-php-tools@seyon-php-tools`:
 
 ```
-/plugin install phpstan@php-tools
+/plugin install seyon-phpstan@seyon-php-tools
 ```
 
-Swap `phpstan` for `phpinsights`, `deptrac`, or `symfony-log` to install just that one skill.
+Swap `seyon-phpstan` for `seyon-phpinsights`, `seyon-deptrac`, or `seyon-symfony-log` to install just that one skill.
 
 ### Keeping it updated
 
 Auto-update is **off by default** for third-party marketplaces like this one (it's on by default only for official Anthropic marketplaces), so new commits pushed to this repo are *not* picked up automatically until you either:
 
-- Enable it: run `/plugin` → **Marketplaces** tab → select `php-tools` → toggle **Enable auto-update** (checked in the background shortly after each session start from then on), or
-- Update on demand: `claude plugin update php-tools@php-tools` (or `/plugin marketplace update php-tools` to refresh the whole catalog first).
+- Enable it: run `/plugin` → **Marketplaces** tab → select `seyon-php-tools` → toggle **Enable auto-update** (checked in the background shortly after each session start from then on), or
+- Update on demand: `claude plugin update seyon-php-tools@seyon-php-tools` (or `/plugin marketplace update seyon-php-tools` to refresh the whole catalog first).
 
 ## Docker, not a generic tool runner
 

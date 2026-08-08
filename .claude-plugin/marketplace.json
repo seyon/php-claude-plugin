@@ -1,34 +1,34 @@
 {
-  "name": "php-tools",
+  "name": "seyon-php-tools",
   "owner": {
     "name": "Christian Wielath"
   },
   "plugins": [
     {
-      "name": "php-tools",
+      "name": "seyon-php-tools",
       "source": "./",
       "description": "All php-tools skills: PHPStan, PHPInsights, Deptrac, and Symfony log investigation"
     },
     {
-      "name": "phpstan",
+      "name": "seyon-phpstan",
       "source": "./",
       "skills": ["./skills/phpstan"],
       "description": "PHPStan advisor: run PHPStan in an isolated Docker container and auto-fix findings"
     },
     {
-      "name": "phpinsights",
+      "name": "seyon-phpinsights",
       "source": "./",
       "skills": ["./skills/phpinsights"],
       "description": "PHPInsights advisor: run PHPInsights in an isolated Docker container and auto-fix findings"
     },
     {
-      "name": "deptrac",
+      "name": "seyon-deptrac",
       "source": "./",
       "skills": ["./skills/deptrac"],
       "description": "Deptrac advisor: run Deptrac in an isolated Docker container and auto-fix layer violations"
     },
     {
-      "name": "symfony-log",
+      "name": "seyon-symfony-log",
       "source": "./",
       "skills": ["./skills/symfony-log"],
       "description": "Investigate a Symfony project's application logs for a given problem/question"

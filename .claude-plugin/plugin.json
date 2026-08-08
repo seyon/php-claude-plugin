@@ -1,5 +1,5 @@
 {
-  "name": "php-tools",
+  "name": "seyon-php-tools",
   "description": "Claude plugin providing skills for PHP tooling like PHPStan, PHPInsights, Deptrac and Symfony log investigation",
   "version": "0.1.0"
 }
