@@ -1,0 +1,5 @@
+{
+  "name": "php-tools",
+  "description": "Claude plugin providing skills for PHP tooling like PHPStan, PHPInsights and Deptrac",
+  "version": "0.1.0"
+}
