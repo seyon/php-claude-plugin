@@ -27,6 +27,7 @@
 # Usage:
 #   run.sh --project-root DIR --binary PATH --config FILE --output FILE \
 #          [--mount-root DIR] [--project-subdir PATH] \
+#          [--extra-mount HOST:CONTAINER[:ro]]... \
 #          [--php-version X.Y] [--extra-extensions ext1,ext2]
 #
 # --project-root     directory containing this project's own composer.json
@@ -38,6 +39,12 @@
 #                     if omitted (see above)
 # --project-subdir     --project-root's path relative to --mount-root;
 #                     auto-detected alongside --mount-root if both omitted
+# --extra-mount         additional bind mount, HOST:CONTAINER[:ro]; repeatable.
+#                     For anything the single --mount-root mount can't cover,
+#                     e.g. a shared config/helpers folder living elsewhere
+#                     on the host. If the project config references it by
+#                     *relative* path, pick the CONTAINER path where that
+#                     relative reference resolves from /app.
 # --php-version         override the auto-detected PHP version
 # --extra-extensions    comma-separated extensions to install in addition
 #                     to what was auto-detected
@@ -51,6 +58,7 @@ LIB_DOCKER_DIR="$PLUGIN_ROOT/lib/docker"
 PROJECT_SUBDIR=""
 EXTRA_EXTENSIONS=""
 PHP_VERSION_OVERRIDE=""
+EXTRA_MOUNTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -60,6 +68,9 @@ while [[ $# -gt 0 ]]; do
     --output) OUTPUT_FILE="$2"; shift 2 ;;
     --mount-root) MOUNT_ROOT="$2"; shift 2 ;;
     --project-subdir) PROJECT_SUBDIR="$2"; shift 2 ;;
+    --extra-mount)
+      [[ "$2" == *:* ]] || { echo "--extra-mount must be HOST:CONTAINER[:ro], got: $2" >&2; exit 1; }
+      EXTRA_MOUNTS+=("$2"); shift 2 ;;
     --php-version) PHP_VERSION_OVERRIDE="$2"; shift 2 ;;
     --extra-extensions) EXTRA_EXTENSIONS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -94,13 +105,18 @@ if [[ "$PROJECT_SUBDIR" != "." ]]; then
   WORKDIR="/app/$PROJECT_SUBDIR"
 fi
 
+MOUNT_ARGS=(-v "$MOUNT_ROOT":/app)
+for m in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do
+  MOUNT_ARGS+=(-v "$m")
+done
+
 # --format=json is fixed here, not left to the caller, so downstream
 # parsing in scripts/parse-results.js can rely on a stable output shape.
 # phpinsights also exits non-zero when its quality gates aren't met
 # (expected -- we're about to fix the underlying issues), so don't let
 # `set -e` treat that as a script failure.
 docker run --rm \
-  -v "$MOUNT_ROOT":/app \
+  "${MOUNT_ARGS[@]}" \
   -w "$WORKDIR" \
   "$IMAGE_TAG" \
   php "$PHPINSIGHTS_BINARY" analyse \

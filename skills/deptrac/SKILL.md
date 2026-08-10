@@ -25,11 +25,18 @@ Look for a `## Deptrac Skill` section in `<project_root>/CLAUDE.md`, then `<proj
 ```
 - deptrac_binary: <path inside the container, e.g. /app/vendor/bin/deptrac, or
                    /app/<project_subdir>/vendor/bin/deptrac for a monorepo package>
-- config_file: <path relative to project_root, e.g. depfile.yaml>
+- config_file: <path relative to project_root, e.g. deptrac.yaml or depfile.yaml>
 - formatter: json          (fixed — never change)
+- baseline_file: <path relative to project_root of the baseline the config
+                  imports (e.g. deptrac.baseline.yaml), or "none". Informational —
+                  Deptrac picks it up itself via the config's `imports:`; recorded
+                  so later runs know a baseline exists and must be respected.>
 - mount_root: <absolute host path to bind-mount; equals project_root unless this
                is a monorepo package with path repositories, see above>
 - project_subdir: <project_root's path relative to mount_root; "." unless monorepo>
+- extra_mounts: <optional; comma-separated HOST:CONTAINER[:ro] bind mounts, passed
+                 through as repeated --extra-mount flags — for folders the single
+                 mount_root mount can't cover. Omit when not needed.>
 ```
 
 There is deliberately no `docker_image_tag` setting — the image tag is derived automatically every run from the project's *current* composer.json/composer.lock (see Step 2), so it can never go stale if requirements change.
@@ -37,10 +44,13 @@ There is deliberately no `docker_image_tag` setting — the image tag is derived
 plus the `### Layer Map` table underneath it: `| Layer Pair | Strategy | Notes |`, where `Layer Pair` is `LayerA -> LayerB`, `Strategy` is one of the 4 plugin strategy slugs above or `custom`, and `Notes` holds the project-specific conventions text injected into that strategy's fix prompt at runtime.
 
 **If not found**, bootstrap it:
-1. Locate `depfile.yaml` in `project_root`.
-2. Confirm `vendor/bin/deptrac` exists (this skill runs the project's own binary, it does not install Deptrac).
-3. Set `mount_root`/`project_subdir` per the monorepo check above.
-4. Write a `## Deptrac Skill` section with these settings (and an empty `### Layer Map` table) to `CLAUDE.local.md`, creating the file if it doesn't exist. Settings land in whichever file already had the section; only create `CLAUDE.local.md` when neither exists.
+1. Locate the deptrac config in `project_root` — check `deptrac.yaml`, `deptrac.yml`, `depfile.yaml`, `depfile.yml` in that order (modern Deptrac defaults to `deptrac.yaml`; `depfile.yaml` is the legacy name).
+2. Check the config's `imports:` for an existing baseline (conventionally `deptrac.baseline.yaml`, containing `skip_violations`) and record it as `baseline_file` (or `none`). An existing baseline is a deliberate project decision: never regenerate, edit, or remove it, and never treat violations it covers as findings to fix — they come back from Deptrac as "skipped" and `parse-results.js` excludes them.
+3. Confirm `vendor/bin/deptrac` exists (this skill runs the project's own binary, it does not install Deptrac).
+4. Set `mount_root`/`project_subdir` per the monorepo check above; record `extra_mounts` if the config references folders outside what mount_root covers (for *relative* references, pick the CONTAINER path where the relative path resolves from `/app`).
+5. Write a `## Deptrac Skill` section with these settings (and an empty `### Layer Map` table) to `CLAUDE.local.md`, creating the file if it doesn't exist. Settings land in whichever file already had the section; only create `CLAUDE.local.md` when neither exists.
+
+**Hard rule: bootstrapping never modifies project files** — not the deptrac config, not the baseline, nothing in the project tree. The only write this step is allowed is the settings section in `CLAUDE.md`/`CLAUDE.local.md`.
 
 ## Step 2 — Run Deptrac
 
@@ -51,12 +61,15 @@ skills/deptrac/docker/run.sh \
   --config <config_file> \
   --output <tmp report path> \
   [--mount-root <mount_root, absolute>] \
-  [--project-subdir <project_subdir>]
+  [--project-subdir <project_subdir>] \
+  [--extra-mount <HOST:CONTAINER[:ro]>]...   # one flag per extra_mounts entry
 ```
 
 `run.sh` auto-detects the PHP version and required extensions from `--project-root`'s own composer.json/composer.lock (default PHP **8.5** if the project doesn't pin one), and resolves/builds the shared Docker image via `lib/docker/build-or-reuse.sh` — the build itself only happens once per project per unique requirement set, every later run reuses the cached image. Omit `--mount-root`/`--project-subdir` entirely for a non-monorepo project.
 
 Always runs with `--formatter=json`; never bypass this with ad-hoc flags — the fixed format is what makes Step 3 reliable.
+
+`run.sh` also fixes `--cache-file` to a plugin-managed host directory (`~/.cache/php-claude-plugin/deptrac/<project>`, bind-mounted into the container) — without this, Deptrac would write `.deptrac.cache` into the mounted project tree, which is forbidden. The project's baseline needs nothing here: Deptrac loads it itself through the config's `imports:`, and the baseline file is inside the mount alongside the config.
 
 ## Step 3 — Group findings by layer pair
 
@@ -109,8 +122,10 @@ Report to the user:
 
 ## Notes
 
-- Verify Deptrac's JSON violation field names once against a real `vendor/bin/deptrac analyse --formatter=json` run for the target project's installed Deptrac version — `parse-results.js` tries a couple of common field-name variants defensively, but the schema has shifted across major Deptrac versions historically.
-- Never let a subagent silence a violation by loosening `depfile.yaml` rulesets — that's a rule-definition change, not a fix, and requires explicit user confirmation (see the skill's original guidance below).
+- **Project files are never modified by this skill's tooling steps** — not the deptrac config, not the baseline, not composer.json. The only files this skill writes are the settings/Layer Map section in `CLAUDE.md`/`CLAUDE.local.md`, custom workflows under `.claude/workflows/`, and the actual code fixes the dispatched workflows make.
+- Baselined violations (Deptrac's "skipped" entries, from the baseline's `skip_violations`) are excluded by `parse-results.js` and must never be dispatched, reported as findings, or "fixed" — the baseline is the project's explicit decision to tolerate them for now. Mention the skipped count in the summary if it's non-zero, nothing more.
+- Verify Deptrac's JSON violation field names once against a real `vendor/bin/deptrac analyse --formatter=json` run for the target project's installed Deptrac version — `parse-results.js` handles the per-file JsonOutputFormatter shape and a flat-array variant defensively, but the schema has shifted across major Deptrac versions historically.
+- Never let a subagent silence a violation by loosening the deptrac config's rulesets or by adding entries to the baseline — that's a rule-definition change, not a fix, and requires explicit user confirmation (see the skill's original guidance below).
 - The 4 shipped strategies are deliberately generic (parameterized by `context` at runtime) — don't bake project-specific paths/conventions into them; those belong in a project's Layer Map `Notes` or, if truly one-off, a custom workflow.
 - Don't loosen ruleset constraints just to silence violations; confirm with the user that a rule change is intentional rather than treating it as a fix.
 - The container never depends on the host machine's PHP install — only on what `lib/docker/detect-requirements.js` finds in the *target project's own* composer.json/composer.lock. If Deptrac fails inside the container complaining about a missing extension that genuinely isn't declared anywhere in composer.json/composer.lock, pass it via `--extra-extensions` on `docker/run.sh` rather than editing `lib/docker/Dockerfile`.

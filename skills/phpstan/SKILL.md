@@ -27,11 +27,17 @@ Look for a `## PHPStan Skill` section in `<project_root>/CLAUDE.md`, then `<proj
                    /app/<project_subdir>/vendor/bin/phpstan for a monorepo package>
 - config_file: <path relative to project_root, e.g. phpstan.neon.dist>
 - error_format: json          (fixed — never change)
-- result_cache_path: <e.g. .phpstan-result-cache.php>
 - mount_root: <absolute host path to bind-mount; equals project_root unless this
                is a monorepo package with path repositories, see above>
 - project_subdir: <project_root's path relative to mount_root; "." unless monorepo>
+- extra_mounts: <optional; comma-separated HOST:CONTAINER[:ro] bind mounts, passed
+                 through as repeated --extra-mount flags — for folders the single
+                 mount_root mount can't cover, e.g. a shared PHPStan-rules
+                 directory elsewhere on the host that the project's config
+                 references. Omit when not needed.>
 ```
+
+There is deliberately no result-cache setting: `docker/run.sh` handles result caching entirely outside the project (see Step 2) — never add cache settings to the project's phpstan config.
 
 There is deliberately no `docker_image_tag` setting — the image tag is derived automatically every run from the project's *current* composer.json/composer.lock (see Step 2), so it can never go stale if requirements change.
 
@@ -40,9 +46,10 @@ plus the `### Recipe Registry` table underneath it (identifier → workflow scri
 **If not found**, bootstrap it:
 1. Locate the phpstan config file (`phpstan.neon`, `phpstan.neon.dist`, or `phpstan.dist.neon`) in `project_root`.
 2. Confirm `vendor/bin/phpstan` exists (PHPStan must already be a project dependency — this skill runs the project's own binary, it does not install PHPStan itself).
-3. Set `result_cache_path: .phpstan-result-cache.php`, and `mount_root`/`project_subdir` per the monorepo check above.
-4. Check the config file for `parameters.resultCache.cacheFilePath`. If it's missing, add it pointing at `result_cache_path` — result caching must always be on, since the container filesystem is ephemeral and only the bind-mounted project directory persists across runs.
-5. Write a `## PHPStan Skill` section with these settings (and an empty `### Recipe Registry` table) to `CLAUDE.local.md`, creating the file if it doesn't exist. Settings always land in whichever file already had the section; only create a *new* file (`CLAUDE.local.md`) when neither exists.
+3. Set `mount_root`/`project_subdir` per the monorepo check above. If the phpstan config `includes:` or otherwise references files outside what mount_root covers (e.g. a shared rules folder elsewhere on the host), record the needed `extra_mounts` — when the reference is a *relative* path, pick the CONTAINER side of the mount so that relative path resolves correctly from `/app` (e.g. config says `../shared-rules/rules.neon`, mount_root is the project → mount the shared folder at `/shared-rules`).
+4. Write a `## PHPStan Skill` section with these settings (and an empty `### Recipe Registry` table) to `CLAUDE.local.md`, creating the file if it doesn't exist. Settings always land in whichever file already had the section; only create a *new* file (`CLAUDE.local.md`) when neither exists.
+
+**Hard rule: bootstrapping never modifies project files.** Do not edit the phpstan config, composer.json, docker-compose files, or anything else in the project tree — the only write this step is allowed is the settings section in `CLAUDE.md`/`CLAUDE.local.md`. In particular, never add result-cache/tmpDir settings to the project's phpstan config: caching is handled outside the project by `run.sh` (see Step 2), and a cache path written into the project config would leak into the user's own runs and tooling (e.g. their docker-compose volumes).
 
 ## Step 2 — Run PHPStan
 
@@ -55,12 +62,15 @@ skills/phpstan/docker/run.sh \
   --config <config_file> \
   --output <tmp report path> \
   [--mount-root <mount_root, absolute>] \
-  [--project-subdir <project_subdir>]
+  [--project-subdir <project_subdir>] \
+  [--extra-mount <HOST:CONTAINER[:ro]>]...   # one flag per extra_mounts entry
 ```
 
 `run.sh` auto-detects the PHP version and required extensions from `--project-root`'s own composer.json/composer.lock (default PHP **8.5** if the project doesn't pin one), and resolves/builds the shared Docker image via `lib/docker/build-or-reuse.sh` — the build itself only happens once per project per unique requirement set, every later run (for this project, or any other with an identical requirement set) reuses the cached image. Omit `--mount-root`/`--project-subdir` entirely for a non-monorepo project (they default to `--project-root` and `.`).
 
-This always runs with `--error-format=json` and reuses the on-disk result cache — never bypass these by calling `vendor/bin/phpstan` directly or adding ad-hoc flags; the fixed parameters are what make the JSON parsing and grouping in Step 3 reliable.
+This always runs with `--error-format=json` — never bypass this by calling `vendor/bin/phpstan` directly or adding ad-hoc flags; the fixed parameters are what make the JSON parsing and grouping in Step 3 reliable.
+
+**Result caching** is handled by `run.sh` without touching the project: it generates a wrapper `.neon` in a plugin-managed host cache directory (`~/.cache/php-claude-plugin/phpstan/<project>`, bind-mounted into the container) that `includes:` the project's own config unchanged and overrides only `tmpDir` to point at that mount. The cache therefore persists across runs on the host, stays per-project, and never appears inside the project tree.
 
 ## Step 3 — Group findings
 
@@ -108,6 +118,7 @@ Report to the user:
 
 ## Notes
 
+- **Project files are never modified by this skill's tooling steps** — not the phpstan config, not composer.json, not docker-compose files. The only files this skill writes are the settings/registry section in `CLAUDE.md`/`CLAUDE.local.md`, generated workflows under `.claude/workflows/`, and the actual code fixes the dispatched workflows make.
 - Never let a subagent invent its own phpstan call parameters — `error_format`, the config path, and result caching are fixed by this skill's settings, not chosen per-run.
 - Fix workflows are project assets meant to accumulate over time (checked into the registry), not regenerated each run — always check `known` before spawning a recipe-author agent.
 - If Docker isn't available in the environment, stop and tell the user — this skill intentionally does not fall back to running PHPStan unsandboxed.

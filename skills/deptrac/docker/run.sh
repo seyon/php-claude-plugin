@@ -24,22 +24,43 @@
 # override detection, or if it hits the safety cap (it will say so on
 # stderr).
 #
+# Cache: Deptrac would by default write `.deptrac.cache` into its working
+# directory -- i.e. into the bind-mounted project tree. That's forbidden
+# here (project files are never touched), so the cache is redirected via
+# --cache-file into a plugin-managed host directory
+# (~/.cache/php-claude-plugin/deptrac/<project>) mounted into the
+# container. It persists across runs because it lives on the host, not in
+# the ephemeral container.
+#
+# Baseline: a baseline (skip_violations) is wired into the project's own
+# deptrac config via `imports:` -- Deptrac picks it up automatically from
+# --config, nothing to pass here. Baselined violations show up as
+# "skipped" in the JSON report and are excluded by scripts/parse-results.js.
+#
 # Usage:
 #   run.sh --project-root DIR --binary PATH --config FILE --output FILE \
 #          [--mount-root DIR] [--project-subdir PATH] \
+#          [--extra-mount HOST:CONTAINER[:ro]]... \
 #          [--php-version X.Y] [--extra-extensions ext1,ext2]
 #
 # --project-root     directory containing this project's own composer.json
 # --binary            deptrac binary path *inside* the container, e.g.
 #                     /app/vendor/bin/deptrac, or /app/packages/api/vendor/bin/deptrac
 #                     for a monorepo sub-package
-# --config            depfile.yaml path, relative to --project-root
+# --config            deptrac config (deptrac.yaml/depfile.yaml) path,
+#                     relative to --project-root
 # --output             host path to write the JSON report to
 # --mount-root         host directory to bind-mount at /app; auto-detected
 #                     if omitted (see above)
 # --project-subdir     --project-root's path relative to --mount-root, used
 #                     as the container's working directory; auto-detected
 #                     alongside --mount-root if both are omitted
+# --extra-mount         additional bind mount, HOST:CONTAINER[:ro]; repeatable.
+#                     For anything the single --mount-root mount can't cover,
+#                     e.g. a shared rules/helpers folder living elsewhere on
+#                     the host. If the project config references it by
+#                     *relative* path, pick the CONTAINER path where that
+#                     relative reference resolves from /app.
 # --php-version         override the auto-detected PHP version
 # --extra-extensions    comma-separated extensions to install in addition
 #                     to what was auto-detected
@@ -53,6 +74,7 @@ LIB_DOCKER_DIR="$PLUGIN_ROOT/lib/docker"
 PROJECT_SUBDIR=""
 EXTRA_EXTENSIONS=""
 PHP_VERSION_OVERRIDE=""
+EXTRA_MOUNTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,6 +84,9 @@ while [[ $# -gt 0 ]]; do
     --output) OUTPUT_FILE="$2"; shift 2 ;;
     --mount-root) MOUNT_ROOT="$2"; shift 2 ;;
     --project-subdir) PROJECT_SUBDIR="$2"; shift 2 ;;
+    --extra-mount)
+      [[ "$2" == *:* ]] || { echo "--extra-mount must be HOST:CONTAINER[:ro], got: $2" >&2; exit 1; }
+      EXTRA_MOUNTS+=("$2"); shift 2 ;;
     --php-version) PHP_VERSION_OVERRIDE="$2"; shift 2 ;;
     --extra-extensions) EXTRA_EXTENSIONS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -96,16 +121,30 @@ if [[ "$PROJECT_SUBDIR" != "." ]]; then
   WORKDIR="/app/$PROJECT_SUBDIR"
 fi
 
+# Plugin-managed cache (see header): keeps Deptrac's cache file out of the
+# mounted project tree. Keyed by the project root path so distinct
+# projects never share a cache.
+CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}/php-claude-plugin/deptrac"
+PROJECT_KEY="$(basename "$PROJECT_ROOT")-$(printf '%s' "$PROJECT_ROOT" | cksum | cut -d' ' -f1)"
+CACHE_DIR="$CACHE_BASE/$PROJECT_KEY"
+mkdir -p "$CACHE_DIR"
+
+MOUNT_ARGS=(-v "$MOUNT_ROOT":/app -v "$CACHE_DIR":/deptrac-cache)
+for m in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do
+  MOUNT_ARGS+=(-v "$m")
+done
+
 # --formatter=json is fixed here, not left to the caller, so downstream
 # parsing in scripts/parse-results.js can rely on a stable output shape.
 # Deptrac also exits non-zero when violations are found (expected -- we're
 # about to fix them), so don't let `set -e` treat that as a script failure.
 docker run --rm \
-  -v "$MOUNT_ROOT":/app \
+  "${MOUNT_ARGS[@]}" \
   -w "$WORKDIR" \
   "$IMAGE_TAG" \
   php "$DEPTRAC_BINARY" analyse \
     --config-file="$CONFIG_FILE" \
+    --cache-file=/deptrac-cache/deptrac.cache \
     --formatter=json \
     --no-progress \
     --no-interaction \

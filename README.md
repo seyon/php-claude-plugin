@@ -51,6 +51,14 @@ Every skill *except* `symfony-log` (which only reads log files off disk, nothing
 
 This means **Docker is a hard requirement** for the `phpstan`/`phpinsights`/`deptrac` skills — there is deliberately no fallback to running tools directly on the host. The plugin has not been built or tested against any other execution environment (podman, rootless containers, remote Docker daemons, CI runners without Docker-in-Docker, Windows without WSL2, etc.). If you need one of those, expect to adapt `lib/docker/` and each skill's `docker/run.sh` yourself.
 
+## Project files are never touched
+
+The analysis tooling never writes into the target project. Tool caches that would normally land in the project tree are redirected to a plugin-managed host directory (`~/.cache/php-claude-plugin/<skill>/<project>`, bind-mounted into the container): PHPStan's result cache via a generated wrapper config that includes the project's own `phpstan.neon` unchanged and overrides only `tmpDir`, Deptrac's cache via `--cache-file`. Project configs are never edited during setup either — the only files a skill writes are its settings/registry section in `CLAUDE.md`/`CLAUDE.local.md`, generated workflows under `.claude/workflows/`, and the actual code fixes. An existing Deptrac baseline (`deptrac.baseline.yaml` imported by the config) is respected as-is: baselined violations are excluded from findings, never "fixed", and the baseline is never regenerated.
+
+## Extra mounts
+
+Each `docker/run.sh` accepts repeatable `--extra-mount HOST:CONTAINER[:ro]` flags (recorded per project as `extra_mounts` in the skill settings) for folders the single project mount can't cover — e.g. a shared PHPStan-rules directory elsewhere on the host. If the project config references such a folder by relative path, mount it at the container path where that relative reference resolves from `/app`.
+
 ## Monorepo support
 
 Skills resolve their target project's root as the directory containing that specific PHP project's own `composer.json` — not necessarily the repository root — and settings/registries are recorded next to it, so a monorepo with several PHP packages ends up with one such section per package. If a project's `composer.json` declares autoload paths pointing outside its own directory (e.g. shared custom PHPStan rules kept in a sibling folder and wired in purely through Composer autoloading), the Docker mount is automatically widened just enough to cover them — capped at a few directory levels, and always overridable, so this stays safe for a default/public checkout that has no such setup.

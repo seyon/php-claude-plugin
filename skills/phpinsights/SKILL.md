@@ -34,6 +34,9 @@ Look for a `## PHPInsights Skill` section in `<project_root>/CLAUDE.md`, then `<
 - mount_root: <absolute host path to bind-mount; equals project_root unless this
                is a monorepo package with path repositories, see above>
 - project_subdir: <project_root's path relative to mount_root; "." unless monorepo>
+- extra_mounts: <optional; comma-separated HOST:CONTAINER[:ro] bind mounts, passed
+                 through as repeated --extra-mount flags — for folders the single
+                 mount_root mount can't cover. Omit when not needed.>
 ```
 
 There is deliberately no `docker_image_tag` setting — the image tag is derived automatically every run from the project's *current* composer.json/composer.lock (see Step 2), so it can never go stale if requirements change.
@@ -55,7 +58,8 @@ skills/phpinsights/docker/run.sh \
   --config <config_file> \
   --output <tmp report path> \
   [--mount-root <mount_root, absolute>] \
-  [--project-subdir <project_subdir>]
+  [--project-subdir <project_subdir>] \
+  [--extra-mount <HOST:CONTAINER[:ro]>]...   # one flag per extra_mounts entry
 ```
 
 `run.sh` auto-detects the PHP version and required extensions from `--project-root`'s own composer.json/composer.lock (default PHP **8.5** if the project doesn't pin one), and resolves/builds the shared Docker image via `lib/docker/build-or-reuse.sh` — the build itself only happens once per project per unique requirement set. Omit `--mount-root`/`--project-subdir` for a non-monorepo project.
@@ -126,6 +130,7 @@ Report to the user:
 
 ## Notes
 
+- **Project files are never modified by this skill's tooling steps** (config files, composer.json, etc.) — the only files this skill writes are the settings/registry section in `CLAUDE.md`/`CLAUDE.local.md`, generated workflows under `.claude/workflows/`, and the actual code/test fixes the dispatched steps make.
 - Never let a subagent invent its own phpinsights call parameters — `format`, the config path, are fixed by this skill's settings, not chosen per-run.
 - PHPInsights' exact JSON field names have not been verified against a live run in building this skill — `scripts/parse-results.js` tries a couple of plausible field-name variants defensively (see its header comment). Verify once against a real `vendor/bin/phpinsights analyse --format=json` run for the target project and adjust the field lookups if they don't match.
 - Fix workflows are project assets meant to accumulate over time (checked into the registry), not regenerated each run — always check `known` before spawning a recipe-author agent.
