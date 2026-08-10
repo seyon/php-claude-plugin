@@ -35,11 +35,22 @@ HASH="$(printf '%s' "$EXTENSIONS" | sha256sum | cut -c1-10)"
 IMAGE_TAG="php-tools-${SKILL}:php${PHP_VERSION}-${HASH}"
 
 if [[ -z "$(docker images -q "$IMAGE_TAG" 2>/dev/null)" ]]; then
-  docker build \
+  # Build output goes to a log file, NOT to stderr -- a first-time build
+  # emits thousands of lines of apt/pecl noise that would otherwise land
+  # verbatim in the calling agent's conversation context.
+  LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/php-claude-plugin/build-logs"
+  mkdir -p "$LOG_DIR"
+  LOG_FILE="$LOG_DIR/$(echo "$IMAGE_TAG" | tr '/:' '__').log"
+  if ! docker build \
     --build-arg PHP_VERSION="$PHP_VERSION" \
     --build-arg PHP_EXTENSIONS="$(echo "$EXTENSIONS" | tr ',' ' ')" \
     -t "$IMAGE_TAG" \
-    "$SCRIPT_DIR" >&2
+    "$SCRIPT_DIR" > "$LOG_FILE" 2>&1; then
+    echo "docker build failed for $IMAGE_TAG -- last 30 log lines (full log: $LOG_FILE):" >&2
+    tail -n 30 "$LOG_FILE" >&2
+    exit 1
+  fi
+  echo "built $IMAGE_TAG (build log: $LOG_FILE)" >&2
 fi
 
 echo "$IMAGE_TAG"

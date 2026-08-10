@@ -133,6 +133,21 @@ function main() {
   }
 
   const groups = [...groupsByInsight.values()].sort((a, b) => b.count - a.count);
+
+  // Context hygiene: the full item lists are written to per-group files and
+  // only referenced by path (`itemsFile`) in the printed summary, so
+  // hundreds of findings never enter the orchestrating conversation's
+  // context. Workflows load their group's file themselves (see the loader
+  // stanza in every workflow script); `sampleItems` (first 3) stays inline
+  // for the recipe/strategy generation step (SKILL.md 4b).
+  const itemsDir = `${path.resolve(args.report)}-groups`;
+  fs.mkdirSync(itemsDir, { recursive: true });
+  for (const group of groups) {
+    group.itemsFile = path.join(itemsDir, `${group.slug}.json`);
+    fs.writeFileSync(group.itemsFile, JSON.stringify(group.items, null, 2) + '\n');
+    group.sampleItems = group.items.slice(0, 3);
+    delete group.items;
+  }
   process.stdout.write(JSON.stringify({ groups }, null, 2) + '\n');
 }
 

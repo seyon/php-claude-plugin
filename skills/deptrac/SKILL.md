@@ -77,7 +77,9 @@ Always runs with `--formatter=json`; never bypass this with ad-hoc flags — the
 node skills/deptrac/scripts/parse-results.js --report <tmp report path> --registry <the CLAUDE.md/CLAUDE.local.md that holds the section>
 ```
 
-Returns `{ groups: [{ layer, dependentLayer, pairKey, slug, rule, count, items, strategy, context, workflowPath, workflowSource, known }] }`, one group per violated layer pair.
+Returns `{ groups: [{ layer, dependentLayer, pairKey, slug, rule, count, itemsFile, sampleItems, strategy, context, workflowPath, workflowSource, known }] }`, one group per violated layer pair.
+
+**Context hygiene — this is how the skill stays cheap on context.** The full item list of each group is NOT in this output: it's written to the file at `itemsFile`, and only `sampleItems` (first 3, for Step 4b) is inline. Never `cat`/Read the raw report, an `itemsFile`, or a Docker build log into the conversation, and dispatch by passing the `itemsFile` **path** (see Step 4), never by inlining items into the `Workflow` call.
 
 - `workflowSource: "plugin-strategy"` — the Layer Map assigns one of the 4 shipped strategies to this pair; `workflowPath` points into `scripts/strategies/`, and `context` (from the registry's Notes column) must be passed at runtime.
 - `workflowSource: "project-custom"` — a bespoke workflow was previously generated for this exact pair at `workflowPath` (under the project's `.claude/workflows/`).
@@ -87,34 +89,44 @@ If there are zero groups, Deptrac is clean — report that and stop.
 
 ## Step 4 — Dispatch each group
 
+**Execution contract — non-negotiable.** These rules exist because the whole point of this skill is the workflow pipeline; a run that "fixes the violations" without it did not follow the skill:
+
+1. The user invoking this skill IS the explicit opt-in for the `Workflow` tool. Never ask for permission to run a workflow, never skip dispatch because it seems heavyweight, and never treat the Workflow tool's general opt-in gate as a reason to hold back — the skill invocation satisfies it.
+2. Every violation is fixed **only** through its group's workflow. Fixing violations directly in the main conversation (editing the affected PHP files yourself) is forbidden, no matter how trivial the fix looks — that bypasses the Haiku→escalate pipeline and the Layer Map accumulation this skill exists for.
+3. `known: false` is **not** a reason to skip a group, defer it, or hand-fix it. It means: do 4b now — run the architecture-analyst subagent, record the decision in the Layer Map, then run the resolved workflow via `Workflow` in the same run. Do not ask the user whether to do this; making these decisions is exactly what they invoked the skill for.
+4. A group may end the run undispatched only if its analyst pass or workflow execution genuinely failed after an attempt — and then Step 5 must say so explicitly. Silently skipping a group is never an outcome.
+
 For every group, in order (largest count first):
 
 **4a. `known: true`, `workflowSource: "plugin-strategy"`**:
 ```
-Workflow({ scriptPath: group.workflowPath, args: { items: group.items, context: group.context } })
+Workflow({ scriptPath: group.workflowPath, args: { itemsFile: group.itemsFile, context: group.context } })
 ```
+Pass the `itemsFile` path, not the items — the workflow loads the file itself, and each returns a compact summary (`{ total, fixed_by_haiku, fixed_after_escalation, fixedFiles, needs_escalation }`) rather than per-item logs.
 
-**4a. `known: true`, `workflowSource: "project-custom"`**:
+**4a. `known: true`, `workflowSource: "project-custom"`** — a previously generated custom workflow under `.claude/workflows/` is dispatched exactly like a plugin strategy: via the `Workflow` tool, not by reading the script and doing the fixes yourself:
 ```
-Workflow({ scriptPath: group.workflowPath, args: group.items })
+Workflow({ scriptPath: group.workflowPath, args: { itemsFile: group.itemsFile } })
 ```
 
 **4b. `known: false`** — run a one-time "architecture analyst" pass, then dispatch immediately:
 1. Spawn one subagent (`Agent` tool, default/Sonnet-tier model — this is the one place a stronger model is required, since it's making the architectural call):
    - The project's `depfile.yaml` contents (layer names, collectors, rulesets) — have the agent read it directly
-   - 2–3 sample violations from `group.items` (class, dependencyClass, file, line), and have the agent read those files for real context
+   - The group's `sampleItems` (class, dependencyClass, file, line — already limited to 3; don't load more from `itemsFile`), and have the agent read those files for real context
    - A one-line description of each of the 4 shipped strategies (see the skill files list above)
    - Instruction: decide which shipped strategy genuinely fits this layer pair's real dependency shape in this codebase. If one fits:
      - Write a concise "Notes" string capturing this project's concrete conventions needed to apply it (e.g. "Ports live under src/Domain/Port, wired via src/Infrastructure/Container.php autowiring" or "Shared layer is src/Shared, Symfony EventDispatcher is used, listeners live under src/*/Listener").
      - Append `| Layer -> DependentLayer | <strategy-slug> | <notes> |` to the `### Layer Map` table.
    - If none of the 4 fits, author a new bespoke workflow at `.claude/workflows/deptrac-<slug>.js` following `templates/custom-strategy-template.js`, then append `| Layer -> DependentLayer | custom | <one-line description> |` to the Layer Map.
-2. Run the resolved workflow the same way as 4a — the first occurrence gets fixed immediately, not deferred.
+2. Verify the outcome landed: the Layer Map row exists, and — for the custom case — the workflow file actually exists at the recorded path and parses as a workflow script; if not, re-prompt the subagent once before giving up and reporting the failure in Step 5.
+3. Run the resolved workflow the same way as 4a — via the `Workflow` tool, in this same run. The first occurrence gets fixed immediately, not deferred, and not fixed by hand "since the strategy is new anyway".
 
 Groups can be dispatched concurrently once each one's strategy/workflow is resolved; unrelated layer pairs don't need to be serialized.
 
 ## Step 5 — Summarize
 
 Report to the user:
+- **A per-group accounting table**: every group from Step 3 with its layer pair, the strategy/workflow used (plugin strategy / project custom / decided this run), and its outcome (n fixed by Haiku / n escalated / failed: reason). Every group must appear — this table is what makes a silently skipped group visible, so an unaccounted group means Step 4 wasn't finished.
 - Total findings fixed by Haiku vs. escalated to the default model
 - Any new layer-pair strategy decisions made this run (pair + chosen strategy or custom workflow)
 - Any items still `needs_escalation` after the default-model pass — surface these explicitly
@@ -123,6 +135,7 @@ Report to the user:
 ## Notes
 
 - **Project files are never modified by this skill's tooling steps** — not the deptrac config, not the baseline, not composer.json. The only files this skill writes are the settings/Layer Map section in `CLAUDE.md`/`CLAUDE.local.md`, custom workflows under `.claude/workflows/`, and the actual code fixes the dispatched workflows make.
+- **Context hygiene**: findings travel by file path, never by value. Don't read the raw report, items files, or build logs into the conversation; don't inline items into `Workflow` calls; don't echo per-item results — the parse summary and the workflows' compact summaries are the only finding data that belongs in the main context.
 - Baselined violations (Deptrac's "skipped" entries, from the baseline's `skip_violations`) are excluded by `parse-results.js` and must never be dispatched, reported as findings, or "fixed" — the baseline is the project's explicit decision to tolerate them for now. Mention the skipped count in the summary if it's non-zero, nothing more.
 - Verify Deptrac's JSON violation field names once against a real `vendor/bin/deptrac analyse --formatter=json` run for the target project's installed Deptrac version — `parse-results.js` handles the per-file JsonOutputFormatter shape and a flat-array variant defensively, but the schema has shifted across major Deptrac versions historically.
 - Never let a subagent silence a violation by loosening the deptrac config's rulesets or by adding entries to the baseline — that's a rule-definition change, not a fix, and requires explicit user confirmation (see the skill's original guidance below).
