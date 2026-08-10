@@ -82,9 +82,16 @@ If there are zero groups, PHPInsights found nothing to fix — report that and s
 
 ## Step 4 — Dispatch each group
 
+**Execution contract — non-negotiable.** These rules exist because the whole point of this skill is the workflow pipeline; a run that "fixes the findings" without it did not follow the skill:
+
+1. The user invoking this skill IS the explicit opt-in for the `Workflow` tool. Never ask for permission to run a workflow, never skip dispatch because it seems heavyweight, and never treat the Workflow tool's general opt-in gate as a reason to hold back — the skill invocation satisfies it.
+2. Every finding is fixed **only** through its group's workflow. Fixing findings directly in the main conversation (editing the affected PHP files yourself) is forbidden, no matter how trivial the fix looks — that bypasses the Haiku→escalate pipeline and the recipe accumulation this skill exists for.
+3. `known: false` is **not** a reason to skip a group, defer it, or hand-fix it. It means: do 4b now — generate the workflow via subagent, register it, then run it via `Workflow` in the same run. Do not ask the user whether to create the workflow; creating recipes for unseen insights is exactly what they invoked the skill for.
+4. A group may end the run undispatched only if its workflow generation or execution genuinely failed after an attempt — and then Step 6 must say so explicitly. Silently skipping a group is never an outcome.
+
 For every group, in order (largest count first):
 
-**4a. `known: true`** — run its existing workflow directly, regardless of source:
+**4a. `known: true`** — run its existing workflow directly, regardless of source (a `workflowSource: "project"` recipe under `.claude/workflows/` is dispatched exactly like a plugin one — via the `Workflow` tool, not by reading the script and doing the fixes yourself):
 ```
 Workflow({ scriptPath: group.workflowPath, args: group.items })
 ```
@@ -95,8 +102,9 @@ Workflow({ scriptPath: group.workflowPath, args: group.items })
    - The exact insight class string
    - The contents of `templates/workflow-template.js` as the required shape
    - Instruction: research what this check actually enforces (the class name is usually descriptive — it's a PHP_CodeSniffer sniff, Slevomat Coding Standard sniff, PHPMD rule, or PHPInsights' own Insights class; consult that underlying tool's docs if the name alone isn't enough) and write a complete, working workflow script to `group.workflowPath` (project-local, under `.claude/workflows/`), with a precise `FIX_PROMPT` fix recipe filled in. The two-stage Haiku→escalate pipeline structure must be preserved exactly.
-2. Append a row to the `### Recipe Registry` table in the settings file: `| <insightClass> | <workflowPath> | <one-line note> |`.
-3. Run the newly created workflow the same way as 4a — the first occurrence gets fixed immediately, not deferred to a later run.
+2. Verify the subagent actually wrote the file at `group.workflowPath` (read it — it must parse as a workflow script with a filled-in `FIX_PROMPT`); if not, re-prompt the subagent once before giving up and reporting the failure in Step 6.
+3. Append a row to the `### Recipe Registry` table in the settings file: `| <insightClass> | <workflowPath> | <one-line note> |`.
+4. Run the newly created workflow the same way as 4a — via `Workflow({ scriptPath: group.workflowPath, args: group.items })`, in this same run. The first occurrence gets fixed immediately, not deferred to a later run, and not fixed by hand "since the workflow is new anyway".
 
 New insights this common across many projects are good candidates to eventually promote into `skills/phpinsights/scripts/workflows/` (shipped with the plugin) instead of staying project-local — mention this to the user when a project-generated recipe looks broadly reusable, but don't do it automatically.
 
@@ -122,6 +130,7 @@ PHPInsights fixes — especially Complexity ones (`CyclomaticComplexityIsHigh`, 
 ## Step 6 — Summarize
 
 Report to the user:
+- **A per-group accounting table**: every group from Step 3 with its insight class, the workflow used (plugin / project / newly generated this run), and its outcome (n fixed by Haiku / n escalated / failed: reason). Every group must appear — this table is what makes a silently skipped group visible, so an unaccounted group means Step 4 wasn't finished.
 - Total findings fixed by Haiku vs. escalated to the default model (aggregate `status` across all workflow results)
 - Any new recipes generated this run (insight class + workflow path)
 - Any items still `needs_escalation` after the default-model pass — surface these explicitly, especially Complexity findings, which often genuinely require human judgment to refactor safely

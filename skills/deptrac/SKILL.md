@@ -87,6 +87,13 @@ If there are zero groups, Deptrac is clean — report that and stop.
 
 ## Step 4 — Dispatch each group
 
+**Execution contract — non-negotiable.** These rules exist because the whole point of this skill is the workflow pipeline; a run that "fixes the violations" without it did not follow the skill:
+
+1. The user invoking this skill IS the explicit opt-in for the `Workflow` tool. Never ask for permission to run a workflow, never skip dispatch because it seems heavyweight, and never treat the Workflow tool's general opt-in gate as a reason to hold back — the skill invocation satisfies it.
+2. Every violation is fixed **only** through its group's workflow. Fixing violations directly in the main conversation (editing the affected PHP files yourself) is forbidden, no matter how trivial the fix looks — that bypasses the Haiku→escalate pipeline and the Layer Map accumulation this skill exists for.
+3. `known: false` is **not** a reason to skip a group, defer it, or hand-fix it. It means: do 4b now — run the architecture-analyst subagent, record the decision in the Layer Map, then run the resolved workflow via `Workflow` in the same run. Do not ask the user whether to do this; making these decisions is exactly what they invoked the skill for.
+4. A group may end the run undispatched only if its analyst pass or workflow execution genuinely failed after an attempt — and then Step 5 must say so explicitly. Silently skipping a group is never an outcome.
+
 For every group, in order (largest count first):
 
 **4a. `known: true`, `workflowSource: "plugin-strategy"`**:
@@ -94,7 +101,7 @@ For every group, in order (largest count first):
 Workflow({ scriptPath: group.workflowPath, args: { items: group.items, context: group.context } })
 ```
 
-**4a. `known: true`, `workflowSource: "project-custom"`**:
+**4a. `known: true`, `workflowSource: "project-custom"`** — a previously generated custom workflow under `.claude/workflows/` is dispatched exactly like a plugin strategy: via the `Workflow` tool, not by reading the script and doing the fixes yourself:
 ```
 Workflow({ scriptPath: group.workflowPath, args: group.items })
 ```
@@ -108,13 +115,15 @@ Workflow({ scriptPath: group.workflowPath, args: group.items })
      - Write a concise "Notes" string capturing this project's concrete conventions needed to apply it (e.g. "Ports live under src/Domain/Port, wired via src/Infrastructure/Container.php autowiring" or "Shared layer is src/Shared, Symfony EventDispatcher is used, listeners live under src/*/Listener").
      - Append `| Layer -> DependentLayer | <strategy-slug> | <notes> |` to the `### Layer Map` table.
    - If none of the 4 fits, author a new bespoke workflow at `.claude/workflows/deptrac-<slug>.js` following `templates/custom-strategy-template.js`, then append `| Layer -> DependentLayer | custom | <one-line description> |` to the Layer Map.
-2. Run the resolved workflow the same way as 4a — the first occurrence gets fixed immediately, not deferred.
+2. Verify the outcome landed: the Layer Map row exists, and — for the custom case — the workflow file actually exists at the recorded path and parses as a workflow script; if not, re-prompt the subagent once before giving up and reporting the failure in Step 5.
+3. Run the resolved workflow the same way as 4a — via the `Workflow` tool, in this same run. The first occurrence gets fixed immediately, not deferred, and not fixed by hand "since the strategy is new anyway".
 
 Groups can be dispatched concurrently once each one's strategy/workflow is resolved; unrelated layer pairs don't need to be serialized.
 
 ## Step 5 — Summarize
 
 Report to the user:
+- **A per-group accounting table**: every group from Step 3 with its layer pair, the strategy/workflow used (plugin strategy / project custom / decided this run), and its outcome (n fixed by Haiku / n escalated / failed: reason). Every group must appear — this table is what makes a silently skipped group visible, so an unaccounted group means Step 4 wasn't finished.
 - Total findings fixed by Haiku vs. escalated to the default model
 - Any new layer-pair strategy decisions made this run (pair + chosen strategy or custom workflow)
 - Any items still `needs_escalation` after the default-model pass — surface these explicitly
