@@ -77,7 +77,9 @@ Always runs with `--formatter=json`; never bypass this with ad-hoc flags — the
 node skills/deptrac/scripts/parse-results.js --report <tmp report path> --registry <the CLAUDE.md/CLAUDE.local.md that holds the section>
 ```
 
-Returns `{ groups: [{ layer, dependentLayer, pairKey, slug, rule, count, items, strategy, context, workflowPath, workflowSource, known }] }`, one group per violated layer pair.
+Returns `{ groups: [{ layer, dependentLayer, pairKey, slug, rule, count, itemsFile, sampleItems, strategy, context, workflowPath, workflowSource, known }] }`, one group per violated layer pair.
+
+**Context hygiene — this is how the skill stays cheap on context.** The full item list of each group is NOT in this output: it's written to the file at `itemsFile`, and only `sampleItems` (first 3, for Step 4b) is inline. Never `cat`/Read the raw report, an `itemsFile`, or a Docker build log into the conversation, and dispatch by passing the `itemsFile` **path** (see Step 4), never by inlining items into the `Workflow` call.
 
 - `workflowSource: "plugin-strategy"` — the Layer Map assigns one of the 4 shipped strategies to this pair; `workflowPath` points into `scripts/strategies/`, and `context` (from the registry's Notes column) must be passed at runtime.
 - `workflowSource: "project-custom"` — a bespoke workflow was previously generated for this exact pair at `workflowPath` (under the project's `.claude/workflows/`).
@@ -98,18 +100,19 @@ For every group, in order (largest count first):
 
 **4a. `known: true`, `workflowSource: "plugin-strategy"`**:
 ```
-Workflow({ scriptPath: group.workflowPath, args: { items: group.items, context: group.context } })
+Workflow({ scriptPath: group.workflowPath, args: { itemsFile: group.itemsFile, context: group.context } })
 ```
+Pass the `itemsFile` path, not the items — the workflow loads the file itself, and each returns a compact summary (`{ total, fixed_by_haiku, fixed_after_escalation, fixedFiles, needs_escalation }`) rather than per-item logs.
 
 **4a. `known: true`, `workflowSource: "project-custom"`** — a previously generated custom workflow under `.claude/workflows/` is dispatched exactly like a plugin strategy: via the `Workflow` tool, not by reading the script and doing the fixes yourself:
 ```
-Workflow({ scriptPath: group.workflowPath, args: group.items })
+Workflow({ scriptPath: group.workflowPath, args: { itemsFile: group.itemsFile } })
 ```
 
 **4b. `known: false`** — run a one-time "architecture analyst" pass, then dispatch immediately:
 1. Spawn one subagent (`Agent` tool, default/Sonnet-tier model — this is the one place a stronger model is required, since it's making the architectural call):
    - The project's `depfile.yaml` contents (layer names, collectors, rulesets) — have the agent read it directly
-   - 2–3 sample violations from `group.items` (class, dependencyClass, file, line), and have the agent read those files for real context
+   - The group's `sampleItems` (class, dependencyClass, file, line — already limited to 3; don't load more from `itemsFile`), and have the agent read those files for real context
    - A one-line description of each of the 4 shipped strategies (see the skill files list above)
    - Instruction: decide which shipped strategy genuinely fits this layer pair's real dependency shape in this codebase. If one fits:
      - Write a concise "Notes" string capturing this project's concrete conventions needed to apply it (e.g. "Ports live under src/Domain/Port, wired via src/Infrastructure/Container.php autowiring" or "Shared layer is src/Shared, Symfony EventDispatcher is used, listeners live under src/*/Listener").
@@ -132,6 +135,7 @@ Report to the user:
 ## Notes
 
 - **Project files are never modified by this skill's tooling steps** — not the deptrac config, not the baseline, not composer.json. The only files this skill writes are the settings/Layer Map section in `CLAUDE.md`/`CLAUDE.local.md`, custom workflows under `.claude/workflows/`, and the actual code fixes the dispatched workflows make.
+- **Context hygiene**: findings travel by file path, never by value. Don't read the raw report, items files, or build logs into the conversation; don't inline items into `Workflow` calls; don't echo per-item results — the parse summary and the workflows' compact summaries are the only finding data that belongs in the main context.
 - Baselined violations (Deptrac's "skipped" entries, from the baseline's `skip_violations`) are excluded by `parse-results.js` and must never be dispatched, reported as findings, or "fixed" — the baseline is the project's explicit decision to tolerate them for now. Mention the skipped count in the summary if it's non-zero, nothing more.
 - Verify Deptrac's JSON violation field names once against a real `vendor/bin/deptrac analyse --formatter=json` run for the target project's installed Deptrac version — `parse-results.js` handles the per-file JsonOutputFormatter shape and a flat-array variant defensively, but the schema has shifted across major Deptrac versions historically.
 - Never let a subagent silence a violation by loosening the deptrac config's rulesets or by adding entries to the baseline — that's a rule-definition change, not a fix, and requires explicit user confirmation (see the skill's original guidance below).

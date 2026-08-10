@@ -55,6 +55,10 @@ This means **Docker is a hard requirement** for the `phpstan`/`phpinsights`/`dep
 
 The analysis tooling never writes into the target project. Tool caches that would normally land in the project tree are redirected to a plugin-managed host directory (`~/.cache/php-claude-plugin/<skill>/<project>`, bind-mounted into the container): PHPStan's result cache via a generated wrapper config that includes the project's own `phpstan.neon` unchanged and overrides only `tmpDir`, Deptrac's cache via `--cache-file`. Project configs are never edited during setup either — the only files a skill writes are its settings/registry section in `CLAUDE.md`/`CLAUDE.local.md`, generated workflows under `.claude/workflows/`, and the actual code fixes. An existing Deptrac baseline (`deptrac.baseline.yaml` imported by the config) is respected as-is: baselined violations are excluded from findings, never "fixed", and the baseline is never regenerated.
 
+## Context-window hygiene
+
+The skills are built to keep the orchestrating conversation's context small: Docker build logs go to a log file (`~/.cache/php-claude-plugin/build-logs/`, one summary line in the conversation), each skill's `parse-results.js` writes the full finding lists to per-group files and prints only counts, paths, and 3 sample items, workflows receive the items **file path** (not the items) and load it themselves via a cheap agent, and every workflow returns a compact summary (counts + only the items that still need attention) instead of per-item logs. So a run with hundreds of findings costs the main context roughly the same as a run with five.
+
 ## Extra mounts
 
 Each `docker/run.sh` accepts repeatable `--extra-mount HOST:CONTAINER[:ro]` flags (recorded per project as `extra_mounts` in the skill settings) for folders the single project mount can't cover — e.g. a shared PHPStan-rules directory elsewhere on the host. If the project config references such a folder by relative path, mount it at the container path where that relative reference resolves from `/app`.
