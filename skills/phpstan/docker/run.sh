@@ -25,9 +25,21 @@
 # Pass --mount-root/--project-subdir explicitly to override detection, or
 # if it hits the safety cap (it will say so on stderr).
 #
+# Result cache: PHPStan's result cache is redirected -- WITHOUT touching any
+# project file -- into a plugin-managed host directory
+# (~/.cache/php-claude-plugin/phpstan/<project>) that is bind-mounted into
+# the container. This is done by generating a tiny wrapper .neon in that
+# cache directory which `includes:` the project's own config unchanged and
+# overrides only `parameters.tmpDir`. The project's phpstan config is never
+# modified, and no cache file is ever written into the project tree (so it
+# can't collide with e.g. a docker-compose cache volume the project defines
+# for its own runs). The cache persists across runs because it lives on the
+# host, not in the ephemeral container.
+#
 # Usage:
 #   run.sh --project-root DIR --binary PATH --config FILE --output FILE \
 #          [--mount-root DIR] [--project-subdir PATH] \
+#          [--extra-mount HOST:CONTAINER[:ro]]... \
 #          [--php-version X.Y] [--extra-extensions ext1,ext2]
 #
 # --project-root     directory containing this project's own composer.json
@@ -41,6 +53,14 @@
 # --project-subdir     --project-root's path relative to --mount-root, used
 #                     as the container's working directory; auto-detected
 #                     alongside --mount-root if both are omitted
+# --extra-mount         additional bind mount, HOST:CONTAINER[:ro]; repeatable.
+#                     For anything the single --mount-root mount can't cover,
+#                     e.g. a shared PHPStan-rules folder living elsewhere on
+#                     the host that the project's config references. If the
+#                     project config references it by *relative* path (e.g.
+#                     `includes: ../shared/rules.neon`), pick the CONTAINER
+#                     path where that relative reference resolves from /app
+#                     (here: /shared) so the include keeps working unchanged.
 # --php-version         override the auto-detected PHP version
 # --extra-extensions    comma-separated extensions to install in addition
 #                     to what was auto-detected (safety valve for anything
@@ -56,6 +76,7 @@ LIB_DOCKER_DIR="$PLUGIN_ROOT/lib/docker"
 PROJECT_SUBDIR=""
 EXTRA_EXTENSIONS=""
 PHP_VERSION_OVERRIDE=""
+EXTRA_MOUNTS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,6 +86,9 @@ while [[ $# -gt 0 ]]; do
     --output) OUTPUT_FILE="$2"; shift 2 ;;
     --mount-root) MOUNT_ROOT="$2"; shift 2 ;;
     --project-subdir) PROJECT_SUBDIR="$2"; shift 2 ;;
+    --extra-mount)
+      [[ "$2" == *:* ]] || { echo "--extra-mount must be HOST:CONTAINER[:ro], got: $2" >&2; exit 1; }
+      EXTRA_MOUNTS+=("$2"); shift 2 ;;
     --php-version) PHP_VERSION_OVERRIDE="$2"; shift 2 ;;
     --extra-extensions) EXTRA_EXTENSIONS="$2"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; exit 1 ;;
@@ -99,16 +123,40 @@ if [[ "$PROJECT_SUBDIR" != "." ]]; then
   WORKDIR="/app/$PROJECT_SUBDIR"
 fi
 
+# Plugin-managed result cache (see header): a wrapper config generated
+# OUTSIDE the project includes the project's config unchanged and points
+# tmpDir at the cache mount. Keyed by the project root path so distinct
+# projects never share a cache.
+CACHE_BASE="${XDG_CACHE_HOME:-$HOME/.cache}/php-claude-plugin/phpstan"
+PROJECT_KEY="$(basename "$PROJECT_ROOT")-$(printf '%s' "$PROJECT_ROOT" | cksum | cut -d' ' -f1)"
+CACHE_DIR="$CACHE_BASE/$PROJECT_KEY"
+mkdir -p "$CACHE_DIR/tmp"
+
+cat > "$CACHE_DIR/wrapper.neon" <<EOF
+# Generated fresh on every run by the phpstan skill (php-claude-plugin).
+# Exists so the result cache lands here instead of in the project tree --
+# the project's own config is included unchanged, never edited.
+includes:
+    - $WORKDIR/$CONFIG_FILE
+parameters:
+    tmpDir: /phpstan-cache/tmp
+EOF
+
+MOUNT_ARGS=(-v "$MOUNT_ROOT":/app -v "$CACHE_DIR":/phpstan-cache)
+for m in ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}; do
+  MOUNT_ARGS+=(-v "$m")
+done
+
 # phpstan exits non-zero when it finds errors -- that's the expected case
 # here (we're about to fix them), so don't let `set -e` treat it as a
 # script failure. A genuine crash still produces empty/invalid JSON, which
 # parse-results.js will reject explicitly.
 docker run --rm \
-  -v "$MOUNT_ROOT":/app \
+  "${MOUNT_ARGS[@]}" \
   -w "$WORKDIR" \
   "$IMAGE_TAG" \
   php "$PHPSTAN_BINARY" analyse \
-    --configuration="$CONFIG_FILE" \
+    --configuration=/phpstan-cache/wrapper.neon \
     --error-format=json \
     --no-progress \
     > "$OUTPUT_FILE" || true
